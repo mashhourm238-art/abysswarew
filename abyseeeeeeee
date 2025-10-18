@@ -1,0 +1,688 @@
+-- ==========================
+-- Load Rayfield First
+-- ==========================
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+-- ==========================
+-- Notify & Feature Check
+-- ==========================
+local function rayfieldNotify(msg)
+    pcall(function()
+        Rayfield:Notify({
+            Title = "Executor Incompatibility",
+            Content = msg,
+            Duration = 10
+        })
+    end)
+end
+local function featureCheck()
+    local missing = {}
+    if not (writefile and readfile) and not (syn and syn.write_file and syn.read_file) then
+        table.insert(missing, "File save/load ('writefile', 'readfile')")
+    end
+    if not setclipboard then
+        table.insert(missing, "Clipboard ('setclipboard')")
+    end
+    if #missing > 0 then
+        local message = "⚠️ Your executor is missing these:\n"
+        for _, m in ipairs(missing) do
+            message = message .. "- " .. m .. "\n"
+        end
+        message = message .. "Some UI may not refresh or save properly.\nTry another executor for best results."
+        rayfieldNotify(message)
+        print(message)
+    end
+end
+featureCheck()
+
+-- ==========================
+-- Rayfield GUI Setup & State
+-- ==========================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local TeleportService = game:GetService("TeleportService")
+local player = Players.LocalPlayer
+local SETTINGS_FILE = "Abyssware_Settings.json"
+local DEFAULTS = {
+    RememberSettings = false,
+    InfJumpUI = false,
+    WalkSpeed = 16,
+    JumpPower = 50,
+    Gravity = 196.2,
+    NoClipUI = false,
+    FlyUI = false,
+    FlySpeed = 30,
+    ESPUI = false,
+    ESPColor = Color3.fromRGB(0,255,0),
+    TPToMouseUI = false,
+    SelectedPlayer = nil,
+}
+local function copyDefaults()
+    local t = {}; for k,v in pairs(DEFAULTS) do t[k]=v end; return t
+end
+local uiState = copyDefaults()
+local function writeSettings(tbl)
+    local ok, err = pcall(function()
+        local json = HttpService:JSONEncode(tbl)
+        if writefile then writefile(SETTINGS_FILE, json)
+        elseif syn and syn.write_file then syn.write_file(SETTINGS_FILE, json) end
+    end)
+    return ok
+end
+local function readSettings()
+    local ok, data = pcall(function()
+        if isfile and isfile(SETTINGS_FILE) then return readfile(SETTINGS_FILE)
+        elseif syn and syn.read_file and syn.exists and syn.exists(SETTINGS_FILE) then return syn.read_file(SETTINGS_FILE)
+        end
+        return nil
+    end)
+    if ok and data then
+        local suc, tbl = pcall(function() return HttpService:JSONDecode(data) end)
+        if suc and type(tbl)=="table" then return tbl end
+    end
+    return nil
+end
+local function readColor3(tbl)
+    return Color3.fromRGB(tbl.r*255, tbl.g*255, tbl.b*255)
+end
+local saved = readSettings()
+if saved and saved.RememberSettings then
+    for k,v in pairs(saved) do
+        if k=="ESPColor" and typeof(v)=="table" then uiState.ESPColor=readColor3(v)
+        else uiState[k]=v end
+    end
+end
+
+local function persistUIState()
+    local tosave = {}
+    for k,v in pairs(uiState) do
+        if typeof(v)=="Color3" then tosave[k]={r=v.R,g=v.G,b=v.B}
+        else tosave[k]=v end
+    end
+    pcall(function() writeSettings(tosave) end)
+end
+local safeNotify = function(title,content)
+    pcall(function() Rayfield:Notify({Title=title,Content=content,Duration=3}) end)
+end
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+   Name = "Abyssware",
+   Icon = 0,
+   LoadingTitle = "Loading Abyssware Script",
+   LoadingSubtitle = "Made by Abyssware Productions",
+   Theme = "Default",
+   ToggleUIKeybind = "K",
+   ConfigurationSaving = {
+      Enabled = true,
+      FolderName = "Your Saved Configuration",
+      FileName = "Abyssware Hub"
+   },
+   Discord = {
+      Enabled = true,
+      Invite = "DbwDUCAK", -- Your Discord invite code here
+      RememberJoins = true
+   },
+   KeySystem = true,
+   KeySettings = {
+      Title = "Abyssware Script/Key",
+      Key = {"free"},
+      Note = "Key in Discord: discord.gg/DbwDUCAK", -- Shows note in key prompt
+      SaveKey = true                                -- Only asks for key once (save)
+   }
+})
+
+local MainTab = Window:CreateTab("Home","home")
+local TeleportTab = Window:CreateTab("Teleport","send")
+local ESPTab = Window:CreateTab("ESP","eye")
+local AimbotTab = Window:CreateTab("Aimbot","target")
+local OtherTab = Window:CreateTab("Other","Settings")
+
+-- ==================== PLAYER & TOGGLES ====================
+_G.InfJumpEnabled = uiState.InfJumpUI
+_G.NoClipEnabled  = uiState.NoClipUI
+_G.FlyEnabled     = uiState.FlyUI
+local ESPEnabled  = uiState.ESPUI
+local TPEnabled   = uiState.TPToMouseUI
+local ESPColor    = uiState.ESPColor
+local ESPObjects  = {}
+
+-- ========== HOME TAB ==========
+
+-- HOME TAB
+local InfJumpToggle = MainTab:CreateToggle({
+    Name = "Infinite Jump",
+    CurrentValue = uiState.InfJumpUI,
+    Callback = function(val)
+        _G.InfJumpEnabled = val
+        uiState.InfJumpUI = val
+        if uiState.RememberSettings then persistUIState() end
+        safeNotify("Infinite Jump", val and "✅ Enabled" or "❌ Disabled")
+
+        -- Infinite Jump logic
+        if _G.InfJumpConn then
+            _G.InfJumpConn:Disconnect()
+            _G.InfJumpConn = nil
+        end
+        if val then
+            _G.InfJumpConn = game:GetService("UserInputService").JumpRequest:Connect(function()
+                local player = game:GetService("Players").LocalPlayer
+                if player and player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+                    player.Character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+                end
+            end)
+        end
+    end
+})
+
+-- HOME TAB
+local NoClipToggle = MainTab:CreateToggle({
+    Name = "NoClip",
+    CurrentValue = uiState.NoClipUI,
+    Callback = function(val)
+        _G.NoClipEnabled = val
+        uiState.NoClipUI = val
+        if uiState.RememberSettings then persistUIState() end
+        safeNotify("NoClip", val and "✅ Enabled" or "❌ Disabled")
+
+        -- NoClip logic
+        if _G.NoClipConn then
+            _G.NoClipConn:Disconnect()
+            _G.NoClipConn = nil
+        end
+        if val then
+            _G.NoClipConn = game:GetService("RunService").Stepped:Connect(function()
+                local player = game:GetService("Players").LocalPlayer
+                if player and player.Character then
+                    for _, part in pairs(player.Character:GetChildren()) do
+                        if part:IsA("BasePart") then
+                            part.CanCollide = false
+                        end
+                    end
+                end
+            end)
+        end
+    end
+})
+-- === HOME TAB: Silent Fly System, Connected to Slider ===
+
+local flyBV, flyBG, flyConn
+
+function startFly()
+    local player = game:GetService("Players").LocalPlayer
+    local char = player.Character or player.CharacterAdded:Wait()
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+
+    hum.PlatformStand = true
+
+    flyBG = Instance.new("BodyGyro")
+    flyBG.P = 9e4
+    flyBG.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+    flyBG.CFrame = hrp.CFrame
+    flyBG.Parent = hrp
+
+    flyBV = Instance.new("BodyVelocity")
+    flyBV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+    flyBV.Parent = hrp
+
+    flyConn = game:GetService("RunService").RenderStepped:Connect(function()
+        if not _G.FlyEnabled then return end
+        -- Always use the latest slider value for speed
+        local speed = tonumber(uiState.FlySpeed) or 30
+
+        local cam = workspace.CurrentCamera
+        flyBG.CFrame = CFrame.new(hrp.Position, hrp.Position + cam.CFrame.LookVector)
+
+        local move = Vector3.new()
+        local UIS = game:GetService("UserInputService")
+        if UIS:IsKeyDown(Enum.KeyCode.W) then move += cam.CFrame.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.S) then move -= cam.CFrame.LookVector end
+        if UIS:IsKeyDown(Enum.KeyCode.A) then move -= cam.CFrame.RightVector end
+        if UIS:IsKeyDown(Enum.KeyCode.D) then move += cam.CFrame.RightVector end
+
+        flyBV.Velocity = move.Magnitude > 0 and move.Unit * (tonumber(uiState.FlySpeed) or 30) or Vector3.new()
+
+        -- NO Sound code anywhere. No Sound objects or playback.
+    end)
+end
+
+function stopFly()
+    if flyConn then flyConn:Disconnect() flyConn = nil end
+    if flyBG then flyBG:Destroy() flyBG = nil end
+    if flyBV then flyBV:Destroy() flyBV = nil end
+    local player = game:GetService("Players").LocalPlayer
+    local char = player.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = false end
+end
+
+local FlyToggle = MainTab:CreateToggle({
+    Name = "Fly",
+    CurrentValue = uiState.FlyUI,
+    Callback = function(val)
+        _G.FlyEnabled = val
+        uiState.FlyUI = val
+        if val then
+            startFly()
+        else
+            stopFly()
+        end
+        if uiState.RememberSettings then persistUIState() end
+        safeNotify("Fly", val and "✅ Enabled" or "❌ Disabled")
+    end
+})
+
+local FlySpeedSlider = MainTab:CreateSlider({
+    Name = "Fly Speed Slider",
+    Range = {30, 240},
+    Increment = 1,
+    Suffix = "Speed",
+    CurrentValue = uiState.FlySpeed,
+    Callback = function(Value)
+        uiState.FlySpeed = Value
+        FlySpeed = Value        -- Optional: keeps old logic working
+        if uiState.RememberSettings then persistUIState() end
+    end
+})
+
+
+
+local JumpPowerSlider = MainTab:CreateSlider({
+    Name="JumpPower Slider",Range={50,500},Increment=1,Suffix="JumpPower",CurrentValue=uiState.JumpPower,
+    Callback=function(Value)
+        uiState.JumpPower=Value
+        local char=player.Character
+        if char and char:FindFirstChild("Humanoid") then char.Humanoid.JumpPower=Value end
+        if uiState.RememberSettings then persistUIState() end
+    end
+})
+local WalkSpeedSlider = MainTab:CreateSlider({
+    Name="WalkSpeed Slider",Range={16,300},Increment=1,Suffix="Speed",CurrentValue=uiState.WalkSpeed,
+    Callback=function(Value)
+        uiState.WalkSpeed=Value
+        local char=player.Character
+        if char and char:FindFirstChild("Humanoid") then char.Humanoid.WalkSpeed=Value end
+        if uiState.RememberSettings then persistUIState() end
+    end
+})
+local GravitySlider = MainTab:CreateSlider({
+    Name="Gravity Slider",Range={0,196.2},Increment=1,Suffix="Gravity",CurrentValue=uiState.Gravity,
+    Callback=function(Value)
+        uiState.Gravity=Value; workspace.Gravity=Value
+        if uiState.RememberSettings then persistUIState() end
+    end
+})
+
+
+
+-- ========== TELEPORT TAB ==========
+local selectedPlayer = uiState.SelectedPlayer
+local function getPlayerList()
+    local list = {}; for _,p in pairs(Players:GetPlayers()) do if p~=player then table.insert(list,p.Name) end end; return list
+end
+local PlayerDropdown=TeleportTab:CreateDropdown({
+    Name="Select Player",Options=getPlayerList(),CurrentOption=selectedPlayer and {selectedPlayer} or {},MultipleOptions=false,
+    Callback=function(Option) selectedPlayer=Option[1];uiState.SelectedPlayer=selectedPlayer; if uiState.RememberSettings then persistUIState() end end})
+Players.PlayerAdded:Connect(function() PlayerDropdown:Refresh(getPlayerList(),true) end)
+Players.PlayerRemoving:Connect(function() PlayerDropdown:Refresh(getPlayerList(),true) end)
+TeleportTab:CreateButton({
+    Name="Teleport To Selected Player",
+    Callback=function()
+        if not selectedPlayer then safeNotify("Teleport","No player selected") return end
+        local target=Players:FindFirstChild(selectedPlayer)
+        if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+            local hrp=player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then hrp.CFrame=target.Character.HumanoidRootPart.CFrame+target.Character.HumanoidRootPart.CFrame.LookVector*-2+Vector3.new(0,3,0)
+            safeNotify("Teleport","Teleported near "..selectedPlayer) end
+        else safeNotify("Teleport","Player not available") end
+    end})
+TeleportTab:CreateSection("Press R to TP to Mouse! (Beta)")
+local TP_Toggle = TeleportTab:CreateToggle({
+    Name="Teleport To Mouse",
+    CurrentValue=uiState.TPToMouseUI,
+    Callback=function(v) TPEnabled=v; uiState.TPToMouseUI=TPEnabled; if uiState.RememberSettings then persistUIState() end end
+})
+
+-- ========== ESP TAB ==========
+local ESPToggle = ESPTab:CreateToggle({
+    Name="ESP Toggle",CurrentValue=uiState.ESPUI,
+    Callback=function(enabled)
+        ESPEnabled=enabled; uiState.ESPUI=enabled
+        if uiState.RememberSettings then persistUIState() end
+        if not enabled then for _,data in pairs(ESPObjects) do if data.Box then data.Box:Destroy() end if data.Billboard then data.Billboard:Destroy() end end ESPObjects={} end
+    end
+})
+local ESPColorPicker = ESPTab:CreateColorPicker({
+    Name="ESP Color",Color=uiState.ESPColor,
+    Callback=function(color)
+        ESPColor=color; uiState.ESPColor=color
+        for _,data in pairs(ESPObjects) do if data.Box then data.Box.Color3=color end if data.Text then data.Text.TextColor3=color end end
+        if uiState.RememberSettings then persistUIState() end
+    end
+})
+
+-- ========== AIMBOT TAB (FULL LOGIC) ==========
+local Drawing = Drawing or getgenv().Drawing
+local fovCircle, aimSnapLine
+if Drawing then
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Visible = false
+    fovCircle.Position = workspace.CurrentCamera.ViewportSize / 2
+    fovCircle.Radius = 80
+    fovCircle.Color = Color3.fromRGB(255,0,0)
+    fovCircle.Thickness = 3
+    fovCircle.Filled = false
+    fovCircle.Transparency = 1
+    aimSnapLine = Drawing.new("Line")
+    aimSnapLine.Visible = false
+    aimSnapLine.Thickness = 2
+    aimSnapLine.Transparency = 0.9
+    aimSnapLine.Color = Color3.fromRGB(255,0,0)
+end
+local aimbotSettings = {
+    Enabled = false, TargetPart = "Head", FOV = 80, Thickness = 3,
+    Filled = false, CircleColor = Color3.fromRGB(255,0,0), Silent = false,
+    Smooth = false, Smoothness = 0.20, IgnoreFriends = true, AutoFire = false,
+    Prediction = false, Priority = "Closest", ShowSnapLine = true,
+    ShowAimList = false, Blacklist = {}
+}
+local availableParts={"Head","Torso","HumanoidRootPart","LeftArm","RightArm","LeftLeg","RightLeg"}
+local priorities={"Closest","Most Distant","Lowest HP","Highest HP"}
+
+AimbotTab:CreateToggle({Name="Aimbot Lock-On",CurrentValue=aimbotSettings.Enabled,Callback=function(val)aimbotSettings.Enabled=val;if fovCircle then fovCircle.Visible=val end end})
+AimbotTab:CreateDropdown({Name="Target Body Part",Options=availableParts,CurrentOption={aimbotSettings.TargetPart},MultipleOptions=false,Callback=function(option)aimbotSettings.TargetPart=option[1]end})
+AimbotTab:CreateDropdown({Name="Target Priority",Options=priorities,CurrentOption={aimbotSettings.Priority},MultipleOptions=false,Callback=function(option)aimbotSettings.Priority=option[1]end})
+AimbotTab:CreateColorPicker({Name="FOV Circle Color",Color=aimbotSettings.CircleColor,Callback=function(color)aimbotSettings.CircleColor=color;if fovCircle then fovCircle.Color=color end;if aimSnapLine then aimSnapLine.Color=color end end})
+AimbotTab:CreateSlider({Name="FOV Radius",Range={20,350},Increment=1,Suffix="px",CurrentValue=aimbotSettings.FOV,Callback=function(v)aimbotSettings.FOV=v;if fovCircle then fovCircle.Radius=v end end})
+AimbotTab:CreateSlider({Name="Circle Thickness",Range={1,7},Increment=1,Suffix="px",CurrentValue=aimbotSettings.Thickness,Callback=function(v)aimbotSettings.Thickness=v;if fovCircle then fovCircle.Thickness=v end end})
+AimbotTab:CreateToggle({Name="Circle Filled",CurrentValue=aimbotSettings.Filled,Callback=function(v)aimbotSettings.Filled=v;if fovCircle then fovCircle.Filled=v end end})
+AimbotTab:CreateToggle({Name="Silent Aim (Moves Pointer)",CurrentValue=aimbotSettings.Silent,Callback=function(v)aimbotSettings.Silent=v end})
+AimbotTab:CreateToggle({Name="Smoothing",CurrentValue=aimbotSettings.Smooth,Callback=function(v)aimbotSettings.Smooth=v end})
+AimbotTab:CreateSlider({Name="Smoothness",Range={0.05,0.85},Increment=0.01,Suffix="",CurrentValue=aimbotSettings.Smoothness,Callback=function(v)aimbotSettings.Smoothness=v end})
+AimbotTab:CreateToggle({Name="Ignore Friends",CurrentValue=aimbotSettings.IgnoreFriends,Callback=function(v)aimbotSettings.IgnoreFriends=v end})
+AimbotTab:CreateToggle({Name="Auto Fire",CurrentValue=aimbotSettings.AutoFire,Callback=function(v)aimbotSettings.AutoFire=v end})
+AimbotTab:CreateToggle({Name="Prediction (for fast games)",CurrentValue=aimbotSettings.Prediction,Callback=function(v)aimbotSettings.Prediction=v end})
+AimbotTab:CreateToggle({Name="Show SnapLine",CurrentValue=aimbotSettings.ShowSnapLine,Callback=function(v)aimbotSettings.ShowSnapLine=v;if aimSnapLine then aimSnapLine.Visible=v end end})
+AimbotTab:CreateToggle({Name="Show Aimable List",CurrentValue=aimbotSettings.ShowAimList,Callback=function(v)aimbotSettings.ShowAimList=v end})
+AimbotTab:CreateInput({Name="Blacklist Player",PlaceholderText="Username",RemoveTextAfterFocusLost=true,Callback=function(txt)aimbotSettings.Blacklist[txt]=true end})
+
+local mouse = player:GetMouse()
+RunService.RenderStepped:Connect(function()
+    if fovCircle then fovCircle.Position = workspace.CurrentCamera.ViewportSize / 2; fovCircle.Visible = aimbotSettings.Enabled end
+    if aimSnapLine and not aimbotSettings.ShowSnapLine then aimSnapLine.Visible = false end
+    if not aimbotSettings.Enabled then if fovCircle then fovCircle.Visible = false end; if aimSnapLine then aimSnapLine.Visible = false end; return end
+    local best, bestDist, bestPart = nil, aimbotSettings.FOV, nil
+    local aimables = {}
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr~=player and plr.Character and plr.Character:FindFirstChild(aimbotSettings.TargetPart)
+        and not aimbotSettings.Blacklist[plr.Name]
+        and (not aimbotSettings.IgnoreFriends or not player:IsFriendsWith(plr.UserId)) then
+            local part = plr.Character[aimbotSettings.TargetPart]
+            local vec,onScreen = workspace.CurrentCamera:WorldToViewportPoint(part.Position)
+            if onScreen then
+                local dist = (Vector2.new(vec.X,vec.Y)-fovCircle.Position).Magnitude
+                local hum = plr.Character:FindFirstChildOfClass("Humanoid")
+                if aimbotSettings.Priority=="Closest" and dist < bestDist then best, bestDist, bestPart = plr, dist, part
+                elseif aimbotSettings.Priority=="Most Distant" and dist > bestDist then best, bestDist, bestPart = plr, dist, part
+                elseif aimbotSettings.Priority=="Lowest HP" and hum and (not best or hum.Health < ((best.Character and best.Character:FindFirstChildOfClass("Humanoid")or{Health=999}).Health)) then best, bestDist, bestPart = plr, dist, part
+                elseif aimbotSettings.Priority=="Highest HP" and hum and (not best or hum.Health > ((best.Character and best.Character:FindFirstChildOfClass("Humanoid")or{Health=-1}).Health)) then best, bestDist, bestPart = plr, dist, part
+                end
+                if dist < fovCircle.Radius then table.insert(aimables,{name=plr.Name,dist=math.floor(dist),vec=vec}) end
+            end
+        end
+    end
+    if bestPart then
+        if aimbotSettings.Silent and mousemoverel then mousemoverel((workspace.CurrentCamera:WorldToViewportPoint(bestPart.Position).X-fovCircle.Position.X),(workspace.CurrentCamera:WorldToViewportPoint(bestPart.Position).Y-fovCircle.Position.Y))
+        elseif aimbotSettings.Smooth then
+            local cam=workspace.CurrentCamera.CFrame.Position; local tar=bestPart.Position;
+            workspace.CurrentCamera.CFrame=workspace.CurrentCamera.CFrame:Lerp(CFrame.new(cam,tar),aimbotSettings.Smoothness)
+        else workspace.CurrentCamera.CFrame=CFrame.new(workspace.CurrentCamera.CFrame.Position,bestPart.Position) end
+        if aimSnapLine and aimbotSettings.ShowSnapLine then
+            aimSnapLine.From=fovCircle.Position
+            local vect=workspace.CurrentCamera:WorldToViewportPoint(bestPart.Position)
+            aimSnapLine.To=Vector2.new(vect.X,vect.Y)
+            aimSnapLine.Color=aimbotSettings.CircleColor
+            aimSnapLine.Visible=true
+        end
+        if aimbotSettings.AutoFire and mouse1click then pcall(function() mouse1click() end) end
+    else if aimSnapLine then aimSnapLine.Visible=false end end
+    if aimbotSettings.ShowAimList then
+        local txt="Aimables:\n"; for _,target in ipairs(aimables)do txt=txt..target.name.." ("..target.dist.." px)\n" end
+        if not game.CoreGui:FindFirstChild("AbyssAimList")then
+            local gui=Instance.new("ScreenGui",game.CoreGui)gui.Name="AbyssAimList"
+            local lb=Instance.new("TextLabel",gui)
+            lb.Name="AimLabel"; lb.Size=UDim2.new(0.2,0,0.4,0); lb.Position=UDim2.new(0.75,0,0,0)
+            lb.BackgroundTransparency=0.4; lb.BackgroundColor3=Color3.fromRGB(10,20,30)
+            lb.TextColor3=aimbotSettings.CircleColor; lb.TextStrokeTransparency=0.8
+            lb.TextScaled=false; lb.Font=Enum.Font.Code; lb.TextWrapped=true
+        end
+        local g=game.CoreGui:FindFirstChild("AbyssAimList")
+        if g and g:FindFirstChild("AimLabel")then g.AimLabel.Text=txt end
+    elseif game.CoreGui:FindFirstChild("AbyssAimList") then game.CoreGui.AbyssAimList:Destroy() end
+end)
+
+-- ========== OTHER TAB ==========
+local Section = OtherTab:CreateSection("all settings get saved except the aimbot so u dont lag thank u!")
+OtherTab:CreateToggle({
+    Name="Remember Settings",CurrentValue=uiState.RememberSettings or false,
+    Callback=function(val) uiState.RememberSettings=val; persistUIState(); safeNotify("Settings",val and "Settings will be remembered" or "Will reset on next run") end
+})
+OtherTab:CreateButton({
+    Name = "Reset All Settings",
+    Callback = function()
+        -- Restore all settings to defaults
+        for key, value in pairs(DEFAULTS) do
+            uiState[key] = value
+        end
+
+        -- Save/reset settings if remembering is enabled
+        if uiState.RememberSettings then
+            persistUIState()
+        end
+
+        -- Update global variables and features
+        _G.InfJumpEnabled = DEFAULTS.InfJumpUI
+        _G.NoClipEnabled = DEFAULTS.NoClipUI
+        _G.FlyEnabled = DEFAULTS.FlyUI
+        ESPEnabled = DEFAULTS.ESPUI
+        TPEnabled = DEFAULTS.TPToMouseUI
+
+        -- Reset ESP visuals
+        for _, data in pairs(ESPObjects) do
+            if data.Box then data.Box:Destroy() end
+            if data.Billboard then data.Billboard:Destroy() end
+        end
+        ESPObjects = {}
+
+        -- Refresh all toggles/sliders in UI for consistency
+        if InfJumpToggle and InfJumpToggle.Set then InfJumpToggle:Set(uiState.InfJumpUI) end
+        if NoClipToggle and NoClipToggle.Set then NoClipToggle:Set(uiState.NoClipUI) end
+        if FlyToggle and FlyToggle.Set then FlyToggle:Set(uiState.FlyUI) end
+        if ESPToggle and ESPToggle.Set then ESPToggle:Set(uiState.ESPUI) end
+        if TP_Toggle and TP_Toggle.Set then TP_Toggle:Set(uiState.TPToMouseUI) end
+        if JumpPowerSlider and JumpPowerSlider.Set then JumpPowerSlider:Set(uiState.JumpPower) end
+        if WalkSpeedSlider and WalkSpeedSlider.Set then WalkSpeedSlider:Set(uiState.WalkSpeed) end
+        if GravitySlider and GravitySlider.Set then GravitySlider:Set(uiState.Gravity) end
+        if FlySpeedSlider and FlySpeedSlider.Set then FlySpeedSlider:Set(uiState.FlySpeed) end
+        if ESPColorPicker and ESPColorPicker.Set then ESPColorPicker:Set(uiState.ESPColor) end
+        if PlayerDropdown and PlayerDropdown.Set then PlayerDropdown:Set(uiState.SelectedPlayer or "") end
+
+        -- Final reset notification
+        safeNotify("Settings", "✅ All settings have been reset to default.")
+    end
+})
+
+OtherTab:CreateButton({
+    Name="Rejoin Server",Callback=function() safeNotify("Rejoin","Rejoining..."); TeleportService:TeleportToPlaceInstance(game.PlaceId,game.JobId,player) end
+})
+OtherTab:CreateSection("Credits")
+OtherTab:CreateParagraph({Title="Credits",Content="Abyssware Productions"})
+OtherTab:CreateSection("Discord")
+OtherTab:CreateButton({
+    Name="Copy Discord Invite",
+    Callback=function() setclipboard("https://discord.gg/DbwDUCAK"); safeNotify("Copied","Discord invite copied!") end
+})
+OtherTab:CreateSection("Character")
+OtherTab:CreateButton({
+    Name="Reset Character",
+    Callback=function() local player=game.Players.LocalPlayer; if player.Character then player.Character:BreakJoints(); safeNotify("Reset","Character has been reset!") end end
+})
+
+-- ========== FLY, INFINITE JUMP, NOCLIP LOGIC ==========
+
+local infJumpConn, noClipConn
+local FlySpeed = uiState.FlySpeed or DEFAULTS.FlySpeed
+local function enableInfJump()
+    if infJumpConn then infJumpConn:Disconnect() end
+    infJumpConn = UserInputService.JumpRequest:Connect(function()
+        if _G.InfJumpEnabled then
+            local char = player.Character
+            if char and char:FindFirstChildWhichIsA("Humanoid") then
+                char:FindFirstChildWhichIsA("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+            end
+        end
+    end)
+end
+local function disableInfJump()
+    if infJumpConn then infJumpConn:Disconnect(); infJumpConn = nil end
+end
+local function enableNoClip()
+    if noClipConn then noClipConn:Disconnect() end
+    noClipConn = RunService.Stepped:Connect(function()
+        if _G.NoClipEnabled and player.Character then
+            for _, part in pairs(player.Character:GetDescendants()) do
+                if part:IsA("BasePart") and part.CanCollide then part.CanCollide = false end
+            end
+        end
+    end)
+end
+local function disableNoClip()
+    if noClipConn then noClipConn:Disconnect(); noClipConn = nil end
+    if player and player.Character then
+        for _, part in pairs(player.Character:GetDescendants()) do
+            if part:IsA("BasePart") then part.CanCollide = true end
+        end
+    end
+end
+if _G.InfJumpEnabled then enableInfJump() end
+if _G.NoClipEnabled then enableNoClip() end
+
+local flyBV, flyBG, flyConn
+local prevStand
+function startFly()
+    local char = player.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+    prevStand = hum.PlatformStand
+    hum.PlatformStand = true
+    flyBG = Instance.new("BodyGyro", hrp)
+    flyBG.P = 9e4
+    flyBG.MaxTorque = Vector3.new(9e9,9e9,9e9)
+    flyBG.CFrame = hrp.CFrame
+    flyBV = Instance.new("BodyVelocity", hrp)
+    flyBV.MaxForce = Vector3.new(9e9,9e9,9e9)
+    flyConn = RunService.RenderStepped:Connect(function()
+        if not _G.FlyEnabled then return end
+        local cam = workspace.CurrentCamera
+        if hrp and flyBG then flyBG.CFrame = CFrame.new(hrp.Position, hrp.Position + cam.CFrame.LookVector) end
+        local move = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= cam.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move -= cam.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += cam.CFrame.RightVector end
+        if flyBV then flyBV.Velocity = move.Magnitude > 0 and move.Unit * FlySpeed or Vector3.zero end
+    end)
+end
+function stopFly()
+    if flyConn then flyConn:Disconnect(); flyConn = nil end
+    if flyBG then flyBG:Destroy(); flyBG = nil end
+    if flyBV then flyBV:Destroy(); flyBV = nil end
+    local hum = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+    if hum then hum.PlatformStand = false end
+end
+
+-- ========== TP TO MOUSE KEY ==========
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.R and TPEnabled then
+        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        local mouse = player:GetMouse()
+        if hrp and mouse and mouse.Target then
+            hrp.CFrame = CFrame.new(mouse.Hit.Position + Vector3.new(0,3,0))
+        end
+    end
+end)
+
+-- ========== ESP LOGIC ==========
+local function createESP(target)
+    if ESPObjects[target] or not target.Character then return end
+    local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+    local hum = target.Character:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return end
+    local box = Instance.new("BoxHandleAdornment")
+    box.Adornee = hrp; box.AlwaysOnTop = true; box.ZIndex = 10
+    box.Size = Vector3.new(2, hum.HipHeight * 2 + 3, 1)
+    box.Transparency = 0.5; box.Color3 = ESPColor; box.Parent = workspace
+    local billboard = Instance.new("BillboardGui")
+    billboard.Adornee = hrp; billboard.Size = UDim2.new(0, 100, 0, 50);
+    billboard.StudsOffset = Vector3.new(0, hum.HipHeight + 1, 0); billboard.AlwaysOnTop = true
+    local textLabel = Instance.new("TextLabel"); textLabel.Size = UDim2.new(1,0,1,0)
+    textLabel.BackgroundTransparency = 1; textLabel.TextColor3 = ESPColor
+    textLabel.Font = Enum.Font.GothamSemibold; textLabel.TextScaled = true; textLabel.Text = target.Name
+    textLabel.Parent = billboard
+    billboard.Parent = workspace
+    ESPObjects[target] = {Box = box, Billboard = billboard, Text = textLabel}
+end
+local function removeESP(target)
+    if ESPObjects[target] then
+        if ESPObjects[target].Box then ESPObjects[target].Box:Destroy() end
+        if ESPObjects[target].Billboard then ESPObjects[target].Billboard:Destroy() end
+        ESPObjects[target] = nil
+    end
+end
+RunService.RenderStepped:Connect(function()
+    if not ESPEnabled then return end
+    for _,target in pairs(Players:GetPlayers()) do
+        if target ~= player and target.Character then
+            createESP(target)
+            local hrp = target.Character:FindFirstChild("HumanoidRootPart")
+            local hum = target.Character:FindFirstChildOfClass("Humanoid")
+            local playerHRP = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if hrp and hum and playerHRP and ESPObjects[target] then
+                local dist = (hrp.Position - playerHRP.Position).Magnitude
+                ESPObjects[target].Text.Text = target.Name .. "\n" .. math.floor(dist) .. " studs"
+                ESPObjects[target].Box.Size = Vector3.new(2, hum.HipHeight * 2 + 3, 1)
+            end
+        elseif ESPObjects[target] then
+            removeESP(target)
+        end
+    end
+end)
+Players.PlayerRemoving:Connect(function(target) removeESP(target) end)
+
+-- ========== SETTINGS/PERSISTENCE APPLIED ON CHARACTER ADD ==========
+local function applyAllSettingsToCharacter()
+    local char = player.Character
+    if char and char:FindFirstChild("Humanoid") then
+        char.Humanoid.WalkSpeed = uiState.WalkSpeed
+        char.Humanoid.JumpPower = uiState.JumpPower
+        workspace.Gravity = uiState.Gravity
+        _G.InfJumpEnabled = uiState.InfJumpUI
+        _G.NoClipEnabled   = uiState.NoClipUI
+        _G.FlyEnabled      = uiState.FlyUI
+        ESPEnabled         = uiState.ESPUI
+        TPEnabled          = uiState.TPToMouseUI
+        if _G.FlyEnabled then startFly() else stopFly() end
+    end
+end
+player.CharacterAdded:Connect(function() wait(0.5); applyAllSettingsToCharacter() end)
+
+
